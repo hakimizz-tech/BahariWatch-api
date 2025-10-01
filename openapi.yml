@@ -1,0 +1,3754 @@
+openapi: 3.0.3
+info:
+  title: BahariWatch Monitoring API
+  version: 1.0.0
+  description: |
+    Community-driven illegal fishing monitoring system for Kenya's coastal regions.
+    Integrates crowdsourced reports with AIS/VMS vessel tracking to detect and prevent IUU fishing.
+    
+    **Key Features:**
+    - Offline-first mobile reporting with automatic sync
+    - Anonymous community reporting with privacy safeguards
+    - Real-time vessel tracking (AIS/VMS/PDS integration)
+    - Spatial-temporal matching engine
+    - Enforcement alert system with action tracking
+    - Comprehensive audit trails for research ethics compliance
+    
+    **Supported Languages:** English, Swahili (use Accept-Language header)
+    
+    **API Design Standards:**
+    This API follows Microsoft REST API Guidelines for consistency and best practices.
+    
+    **Naming Conventions:**
+    - Resource names: plural nouns (e.g., `/reports`, `/vessels`)
+    - Properties: camelCase (e.g., `userId`, `createdAt`, `photoUrl`)
+    - Query parameters: Use `$` prefix for OData-style operators (`$filter`, `$orderby`)
+    - Headers: Use standard HTTP headers; custom headers prefixed with `X-`
+    - Date/Time: ISO 8601 format (e.g., `2025-05-15T14:30:00Z`)
+    - IDs: String format with semantic prefix (e.g., `rpt-20250515-001`, `alert-001`)
+    
+    **Collection Responses:**
+    All collection endpoints return an object with a `value` array for extensibility.
+    Pagination uses cursor-based approach with `@odata.nextLink` (OData) or `nextCursor`.
+    
+    **Error Handling:**
+    Errors follow RFC 7807 problem details format with structured error objects.
+    See Error schema for complete structure including `innerError` for debugging.
+    
+    **Content Negotiation:**
+    - Request/Response Format: `application/json` (primary and only supported format)
+    - Language: Use `Accept-Language` header for English (`en`) or Swahili (`sw`)
+    - Character Encoding: UTF-8
+    - Use `Accept` header to specify response format (currently only `application/json` supported)
+  contact:
+    name: joshua kimathi
+    email: joshua@kabark.ac.ke
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000/v1
+    description: Local development
+  - url: https://api.bahariwatch.ke/v1
+    description: Production server
+ 
+
+
+tags:
+  - name: Reports
+    description: Community incident reporting endpoints
+  - name: Sync
+    description: Offline synchronization operations
+  - name: Vessels
+    description: AIS/VMS/PDS vessel tracking data
+  - name: Matches
+    description: Report-vessel matching operations
+  - name: Alerts
+    description: Alert management for enforcement
+  - name: Enforcement
+    description: Patrol and enforcement action tracking
+  - name: Users
+    description: User authentication and profile management
+  - name: Locations
+    description: Hotspot and geographic data
+  - name: Analytics
+    description: Dashboard and reporting metrics
+  - name: Webhooks
+    description: |
+      Real-time event notifications via HTTP callbacks.
+      
+      **Security:** All webhook payloads include an `X-Webhook-Signature` header containing
+      an HMAC-SHA256 signature for verification. Format: `sha256=<signature>`
+      
+      Verify the signature using your webhook secret:
+      ```
+      signature = HMAC_SHA256(webhook_secret, request_body)
+      expected = "sha256=" + hex(signature)
+      assert expected == request.headers['X-Webhook-Signature']
+      ```
+  - name: Audit
+    description: Compliance and audit trail
+  - name: Search
+    description: Cross-entity search operations
+  - name: Batch
+    description: Bulk operations
+  - name: System
+    description: Health checks and system status
+  - name: API Keys
+    description: API key management for integrations
+
+paths:
+  # ==================== REPORTS ENDPOINTS ====================
+  /reports:
+    post:
+      tags:
+        - Reports
+      summary: Submit incident report
+      description: |
+        Allows community members to submit geotagged photographic evidence of suspected IUU fishing.
+        Photos are automatically stripped of EXIF metadata to protect reporter privacy.
+        
+        **Offline Support:** Include `X-Offline-Timestamp` header with original capture time.
+        **Idempotency:** Use `Idempotency-Key` header to prevent duplicate submissions.
+      operationId: createReport
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/OfflineTimestampHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - photo
+                - location
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: Photo evidence (max 5MB, JPEG/PNG only)
+                location:
+                  $ref: '#/components/schemas/GeoLocation'
+                notes:
+                  type: string
+                  maxLength: 500
+                  description: Optional description of the incident
+                  example: "Large trawler using unauthorized nets near Kilifi"
+                observedAt:
+                  type: string
+                  format: date-time
+                  description: When the incident was observed (defaults to current time)
+      responses:
+        '201':
+          description: Report created successfully
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+            Location:
+              description: URI of the created report
+              schema:
+                type: string
+                format: uri
+              example: "https://api.bahariwatch.ke/v1/reports/rpt-20250515-001"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+              example:
+                id: "rpt-20250515-001"
+                userId: "anon-a3f2b1c04d5e"
+                location:
+                  latitude: -4.0435
+                  longitude: 39.6682
+                  accuracy: 15.5
+                photoUrl: "/media/reports/rpt-001.jpg?expires=1684156800&sig=abc123"
+                timestamp: "2025-05-15T14:30:00Z"
+                observedAt: "2025-05-15T14:25:00Z"
+                notes: "Large trawler fishing in prohibited zone"
+                status: "pending"
+                county: "Kilifi"
+                createdAt: "2025-05-15T14:30:00Z"
+                updatedAt: "2025-05-15T14:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Photo too large (max 5MB)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+    get:
+      tags:
+        - Reports
+      summary: List incident reports
+      description: Retrieve paginated list of reports (filtered by user role)
+      operationId: listReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FilterParam'
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OrderByParam'
+        - $ref: '#/components/parameters/CountParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, verified, false_positive, resolved]
+          description: Filter by report status
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Filter reports after this date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Filter reports before this date
+        - name: county
+          in: query
+          schema:
+            type: string
+            enum: [Lamu, Kilifi, Mombasa, Kwale, "Tana River"]
+          description: Filter by coastal county
+      responses:
+        '200':
+          description: List of reports retrieved successfully
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportCollection'
+              example:
+                value:
+                  - id: "rpt-20250515-001"
+                    userId: "anon-a3f2b1c04d5e"
+                    location:
+                      latitude: -4.0435
+                      longitude: 39.6682
+                      accuracy: 15.5
+                    photoUrl: "/media/reports/rpt-001.jpg?expires=1684156800&sig=abc123"
+                    timestamp: "2025-05-15T14:30:00Z"
+                    observedAt: "2025-05-15T14:25:00Z"
+                    notes: "Large trawler fishing in prohibited zone"
+                    status: "verified"
+                    county: "Kilifi"
+                    createdAt: "2025-05-15T14:30:00Z"
+                    updatedAt: "2025-05-16T08:15:00Z"
+                  - id: "rpt-20250515-002"
+                    userId: "anon-b7e3c2d1a4f6"
+                    location:
+                      latitude: -4.1234
+                      longitude: 39.7890
+                      accuracy: 20.0
+                    photoUrl: "/media/reports/rpt-002.jpg?expires=1684156800&sig=def456"
+                    timestamp: "2025-05-15T16:45:00Z"
+                    observedAt: "2025-05-15T16:40:00Z"
+                    notes: "Vessel with illegal nets"
+                    status: "pending"
+                    county: "Mombasa"
+                    createdAt: "2025-05-15T16:45:00Z"
+                    updatedAt: "2025-05-15T16:45:00Z"
+                '@odata.nextLink': "https://api.bahariwatch.ke/v1/reports?cursor=eyJpZCI6InJwdC0wMDIifQ"
+                '@odata.count': 1250
+                nextCursor: "eyJpZCI6InJwdC0wMDIifQ"
+                count: 1250
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /reports/{reportId}:
+    get:
+      tags:
+        - Reports
+      summary: Get specific report
+      description: Retrieve details of a single report
+      operationId: getReport
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Report identifier
+          example: "rpt-20250515-001"
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Report details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Reports
+      summary: Delete report
+      description: Delete a report (own reports only, or admin)
+      operationId: deleteReport
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '204':
+          description: Report deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reports/{reportId}/status:
+    patch:
+      tags:
+        - Reports
+      summary: Update report status
+      description: Update the verification status of a report (BMU officers and enforcement only)
+      operationId: updateReportStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [pending, verified, false_positive, resolved]
+                notes:
+                  type: string
+                  maxLength: 500
+                  description: Verification notes
+      responses:
+        '200':
+          description: Status updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reports/{reportId}/similar:
+    get:
+      tags:
+        - Reports
+      summary: Find similar reports
+      description: Detect potential duplicate reports from same location/time
+      operationId: findSimilarReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: radius
+          in: query
+          schema:
+            type: number
+            default: 1.0
+          description: Search radius in kilometers
+        - name: timeWindow
+          in: query
+          schema:
+            type: integer
+            default: 30
+          description: Time window in minutes
+      responses:
+        '200':
+          description: Similar reports found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  similar:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Report'
+                  matchScore:
+                    type: number
+                    description: Similarity score (0-1)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reports/merge:
+    post:
+      tags:
+        - Reports
+      summary: Merge duplicate reports
+      description: Combine multiple reports of the same incident (BMU/admin only)
+      operationId: mergeReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - primaryReportId
+                - duplicateReportIds
+              properties:
+                primaryReportId:
+                  type: string
+                  description: Report to keep
+                duplicateReportIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Reports to merge into primary
+                notes:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Reports merged successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /reports/{reportId}/photo/metadata:
+    get:
+      tags:
+        - Reports
+      summary: Get photo metadata
+      description: View what EXIF metadata was stripped from uploaded photo
+      operationId: getPhotoMetadata
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Photo metadata information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  originalSize:
+                    type: integer
+                    description: Original file size in bytes
+                  cleanedSize:
+                    type: integer
+                    description: Size after EXIF removal
+                  strippedFields:
+                    type: array
+                    items:
+                      type: string
+                    description: EXIF fields that were removed
+                    example: ["GPS", "Make", "Model", "Software"]
+                  retained:
+                    type: object
+                    description: Non-identifying data retained
+                    properties:
+                      timestamp:
+                        type: string
+                        format: date-time
+                      dimensions:
+                        type: object
+                        properties:
+                          width:
+                            type: integer
+                          height:
+                            type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reports/validate-location:
+    post:
+      tags:
+        - Reports
+      summary: Validate report location
+      description: Check if location is within Kenya's EEZ and not in protected areas
+      operationId: validateLocation
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - location
+              properties:
+                location:
+                  $ref: '#/components/schemas/GeoLocation'
+      responses:
+        '200':
+          description: Location validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  withinEEZ:
+                    type: boolean
+                  inProtectedArea:
+                    type: boolean
+                  protectedAreaName:
+                    type: string
+                  county:
+                    type: string
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== SYNC ENDPOINTS ====================
+  /sync/reports/batch:
+    post:
+      tags:
+        - Sync
+      summary: Batch upload offline reports
+      description: |
+        Upload multiple reports captured while offline.
+        Each report is processed with deduplication checks.
+      operationId: batchSyncReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreferHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reports
+              properties:
+                reports:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - localId
+                      - location
+                      - photoBase64
+                      - capturedAt
+                    properties:
+                      localId:
+                        type: string
+                        description: Client-side UUID for tracking
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      photoBase64:
+                        type: string
+                        description: Base64-encoded photo
+                      notes:
+                        type: string
+                      capturedAt:
+                        type: string
+                        format: date-time
+      responses:
+        '200':
+          description: Batch sync completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processed:
+                    type: integer
+                  successful:
+                    type: integer
+                  failed:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        localId:
+                          type: string
+                        serverId:
+                          type: string
+                        status:
+                          type: string
+                          enum: [created, duplicate, failed]
+                        error:
+                          type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /sync/status:
+    get:
+      tags:
+        - Sync
+      summary: Get sync status
+      description: Check status of pending offline reports
+      operationId: getSyncStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Sync status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pendingCount:
+                    type: integer
+                  lastSyncAt:
+                    type: string
+                    format: date-time
+                  nextSyncAt:
+                    type: string
+                    format: date-time
+                  failedReports:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        localId:
+                          type: string
+                        error:
+                          type: string
+                        retryCount:
+                          type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== VESSELS ENDPOINTS ====================
+  /vessels:
+    get:
+      tags:
+        - Vessels
+      summary: List vessels
+      description: Retrieve vessel tracking data from AIS/VMS feeds
+      operationId: listVessels
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: lastSeenAfter
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Filter vessels last seen after this timestamp
+        - name: withinRadius
+          in: query
+          schema:
+            type: string
+          description: Filter vessels within radius (format - lat,lon,radiusKm)
+          example: "-4.0435,39.6682,10"
+        - name: licensed
+          in: query
+          schema:
+            type: boolean
+          description: Filter by license status
+      responses:
+        '200':
+          description: Vessel list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VesselCollection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /vessels/{vesselId}:
+    get:
+      tags:
+        - Vessels
+      summary: Get vessel details
+      description: Retrieve detailed information about a specific vessel
+      operationId: getVessel
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vesselId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Vessel identifier (MMSI or IMO number)
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Vessel details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VesselDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /vessels/{vesselId}/tracks:
+    get:
+      tags:
+        - Vessels
+      summary: Get vessel movement history
+      description: Retrieve historical position data for a vessel
+      operationId: getVesselTracks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vesselId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Track history retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vesselId:
+                    type: string
+                  tracks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VesselTrack'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /vessels/search:
+    post:
+      tags:
+        - Vessels
+      summary: Spatial-temporal vessel search
+      description: Search for vessels based on location and time criteria
+      operationId: searchVessels
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - location
+                - radius
+                - timeWindow
+              properties:
+                location:
+                  $ref: '#/components/schemas/GeoLocation'
+                radius:
+                  type: number
+                  description: Search radius in kilometers
+                  example: 5.0
+                timeWindow:
+                  type: object
+                  required:
+                    - start
+                    - end
+                  properties:
+                    start:
+                      type: string
+                      format: date-time
+                    end:
+                      type: string
+                      format: date-time
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Vessel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /vessels/pds/ingest:
+    post:
+      tags:
+        - Vessels
+      summary: Ingest PDS telemetry data
+      description: Receive vessel tracking data from Pelagic Data Systems devices
+      operationId: ingestPDSData
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deviceId
+                - telemetry
+              properties:
+                deviceId:
+                  type: string
+                  description: PDS device identifier
+                telemetry:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - timestamp
+                      - location
+                    properties:
+                      timestamp:
+                        type: string
+                        format: date-time
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      speed:
+                        type: number
+                      course:
+                        type: number
+                      catch:
+                        type: object
+                        properties:
+                          species:
+                            type: string
+                          weight:
+                            type: number
+      responses:
+        '202':
+          description: Telemetry data accepted for processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ingested:
+                    type: integer
+                  batchId:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /vessels/pds/status:
+    get:
+      tags:
+        - Vessels
+      summary: Get PDS device status
+      description: Check health of PDS devices on fishing vessels
+      operationId: getPDSStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: deviceId
+          in: query
+          schema:
+            type: string
+          description: Filter by specific device
+      responses:
+        '200':
+          description: PDS device status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        deviceId:
+                          type: string
+                        vesselName:
+                          type: string
+                        status:
+                          type: string
+                          enum: [active, inactive, error]
+                        lastSeen:
+                          type: string
+                          format: date-time
+                        batteryLevel:
+                          type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /vessels/last-sync:
+    get:
+      tags:
+        - Vessels
+      summary: Get last AIS/VMS sync time
+      description: When vessel tracking data was last updated
+      operationId: getLastVesselSync
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Last sync information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ais:
+                    type: object
+                    properties:
+                      lastSync:
+                        type: string
+                        format: date-time
+                      status:
+                        type: string
+                        enum: [operational, delayed, error]
+                      vesselsTracked:
+                        type: integer
+                  vms:
+                    type: object
+                    properties:
+                      lastSync:
+                        type: string
+                        format: date-time
+                      status:
+                        type: string
+                        enum: [operational, delayed, error]
+                      vesselsTracked:
+                        type: integer
+                  pds:
+                    type: object
+                    properties:
+                      lastSync:
+                        type: string
+                        format: date-time
+                      devicesActive:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== MATCHES ENDPOINTS ====================
+  /matches:
+    get:
+      tags:
+        - Matches
+      summary: List report-vessel matches
+      description: Retrieve matches between community reports and vessel tracks
+      operationId: listMatches
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: confidence
+          in: query
+          schema:
+            type: string
+            enum: [high, medium, low]
+          description: Filter by confidence level
+        - name: dismissed
+          in: query
+          schema:
+            type: boolean
+          description: Include/exclude dismissed matches
+      responses:
+        '200':
+          description: Match list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchCollection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /matches/trigger:
+    post:
+      tags:
+        - Matches
+      summary: Force matching process
+      description: Manually trigger the matching engine (admin/BMU only)
+      operationId: triggerMatching
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreferHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reportIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Specific reports to match (optional)
+      responses:
+        '202':
+          description: Matching process initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued, processing]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== ALERTS ENDPOINTS ====================
+  /alerts:
+    get:
+      tags:
+        - Alerts
+      summary: Get alerts
+      description: Retrieve IUU fishing alerts (enforcement agencies only)
+      operationId: listAlerts
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [critical, high, medium, low]
+        - name: acknowledged
+          in: query
+          schema:
+            type: boolean
+          description: Filter by acknowledgement status
+        - name: county
+          in: query
+          schema:
+            type: string
+          description: Filter by coastal county
+      responses:
+        '200':
+          description: Alert list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertCollection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /alerts/{alertId}/acknowledge:
+    patch:
+      tags:
+        - Alerts
+      summary: Acknowledge alert
+      description: Mark an alert as acknowledged by enforcement
+      operationId: acknowledgeAlert
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  maxLength: 500
+                actionTaken:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Alert acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /alerts/{alertId}/actions:
+    post:
+      tags:
+        - Alerts
+      summary: Log enforcement action
+      description: Record patrol dispatch or enforcement response to alert
+      operationId: logAlertAction
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnforcementAction'
+      responses:
+        '201':
+          description: Action logged successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnforcementAction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    get:
+      tags:
+        - Alerts
+      summary: Get alert actions
+      description: Retrieve all enforcement actions for an alert
+      operationId: getAlertActions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Actions retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EnforcementAction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== ENFORCEMENT ENDPOINTS ====================
+  /enforcement/response-times:
+    get:
+      tags:
+        - Enforcement
+      summary: Get enforcement response metrics
+      description: Calculate average response times from alert to action
+      operationId: getResponseTimes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: county
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Response time metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  averageResponseMinutes:
+                    type: number
+                  medianResponseMinutes:
+                    type: number
+                  fastestResponseMinutes:
+                    type: number
+                  slowestResponseMinutes:
+                    type: number
+                  totalAlerts:
+                    type: integer
+                  respondedAlerts:
+                    type: integer
+                  byCounty:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        county:
+                          type: string
+                        averageResponse:
+                          type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /enforcement/patrol-logs:
+    get:
+      tags:
+        - Enforcement
+      summary: Get patrol logs
+      description: Retrieve field action records
+      operationId: getPatrolLogs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: officer
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Patrol logs retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PatrolLog'
+                  nextCursor:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags:
+        - Enforcement
+      summary: Create patrol log
+      description: Record a field patrol activity
+      operationId: createPatrolLog
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatrolLog'
+      responses:
+        '201':
+          description: Patrol log created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatrolLog'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== USERS ENDPOINTS ====================
+  /users/register:
+    post:
+      tags:
+        - Users
+      summary: Register new user
+      description: Create anonymous community reporter account
+      operationId: registerUser
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deviceId
+              properties:
+                deviceId:
+                  type: string
+                  description: Unique device identifier (hashed on server)
+                region:
+                  type: string
+                  description: Coastal county
+                  enum: [Lamu, Kilifi, Mombasa, Kwale, "Tana River"]
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    description: Anonymous user identifier
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+                  expiresIn:
+                    type: integer
+                    description: Token expiry in seconds
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /users/login:
+    post:
+      tags:
+        - Users
+      summary: User login
+      description: Authenticate and receive JWT tokens
+      operationId: loginUser
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deviceId
+              properties:
+                deviceId:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/refresh:
+    post:
+      tags:
+        - Users
+      summary: Refresh access token
+      description: Obtain new access token using refresh token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me:
+    get:
+      tags:
+        - Users
+      summary: Get current user profile
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: User profile retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/data:
+    delete:
+      tags:
+        - Users
+      summary: Delete user data (GDPR)
+      description: Right to erasure - permanently delete all user data
+      operationId: deleteUserData
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Data deletion initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  deletionId:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/notification-settings:
+    get:
+      tags:
+        - Users
+      summary: Get notification preferences
+      operationId: getNotificationSettings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notification settings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    patch:
+      tags:
+        - Users
+      summary: Update notification preferences
+      operationId: updateNotificationSettings
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettings'
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/devices:
+    get:
+      tags:
+        - Users
+      summary: List registered devices
+      description: Get push notification tokens
+      operationId: getDevices
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Devices retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    deviceId:
+                      type: string
+                    pushToken:
+                      type: string
+                    platform:
+                      type: string
+                      enum: [ios, android]
+                    lastSeen:
+                      type: string
+                      format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Users
+      summary: Register device for push notifications
+      operationId: registerDevice
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pushToken
+                - platform
+              properties:
+                pushToken:
+                  type: string
+                platform:
+                  type: string
+                  enum: [ios, android]
+      responses:
+        '201':
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deviceId:
+                    type: string
+                  registered:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== LOCATIONS ENDPOINTS ====================
+  /locations/hotspots:
+    get:
+      tags:
+        - Locations
+      summary: Get IUU hotspots
+      description: Retrieve geographic areas with high concentration of incidents
+      operationId: getHotspots
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: timeRange
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 30d, 90d]
+            default: 7d
+          description: Time range for hotspot calculation
+        - name: minIncidents
+          in: query
+          schema:
+            type: integer
+            default: 3
+          description: Minimum incidents to qualify as hotspot
+      responses:
+        '200':
+          description: Hotspot data retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hotspots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Hotspot'
+                  generatedAt:
+                    type: string
+                    format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /locations/counties:
+    get:
+      tags:
+        - Locations
+      summary: Get coastal counties statistics
+      operationId: getCountyStats
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: County statistics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    county:
+                      type: string
+                    reportCount:
+                      type: integer
+                    verifiedCount:
+                      type: integer
+                    lastReportAt:
+                      type: string
+                      format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /locations/protected-areas:
+    get:
+      tags:
+        - Locations
+      summary: List marine protected areas
+      description: Get boundaries of Kenya's marine protected areas
+      operationId: getProtectedAreas
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Protected areas retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    type:
+                      type: string
+                      enum: [marine_park, marine_reserve, restricted_zone]
+                    boundary:
+                      type: object
+                      description: GeoJSON polygon
+                    restrictions:
+                      type: array
+                      items:
+                        type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== ANALYTICS ENDPOINTS ====================
+  /analytics/reports-by-time:
+    get:
+      tags:
+        - Analytics
+      summary: Get report time series
+      description: Report counts aggregated by time period
+      operationId: getReportsByTime
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: day
+        - name: county
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Time series data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        total:
+                          type: integer
+                        verified:
+                          type: integer
+                        pending:
+                          type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /analytics/vessel-frequency:
+    get:
+      tags:
+        - Analytics
+      summary: Get most reported vessels
+      description: Vessels with highest number of reports
+      operationId: getVesselFrequency
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: timeRange
+          in: query
+          schema:
+            type: string
+            enum: [7d, 30d, 90d, all]
+            default: 30d
+      responses:
+        '200':
+          description: Vessel frequency data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    vesselId:
+                      type: string
+                    vesselName:
+                      type: string
+                    reportCount:
+                      type: integer
+                    verifiedCount:
+                      type: integer
+                    lastReported:
+                      type: string
+                      format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /analytics/verification-rate:
+    get:
+      tags:
+        - Analytics
+      summary: Get BMU verification metrics
+      description: BMU officer performance in report verification
+      operationId: getVerificationRate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: officer
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalReports:
+                    type: integer
+                  verifiedCount:
+                    type: integer
+                  falsePositiveCount:
+                    type: integer
+                  pendingCount:
+                    type: integer
+                  averageVerificationTimeMinutes:
+                    type: number
+                  byOfficer:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        officerId:
+                          type: string
+                        verified:
+                          type: integer
+                        avgTimeMinutes:
+                          type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dashboard/summary:
+    get:
+      tags:
+        - Analytics
+      summary: Get dashboard summary
+      description: Combined statistics for main dashboard
+      operationId: getDashboardSummary
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+        - name: timeRange
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 30d]
+            default: 7d
+      responses:
+        '200':
+          description: Dashboard summary data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reports:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      pending:
+                        type: integer
+                      verified:
+                        type: integer
+                      trend:
+                        type: string
+                        enum: [increasing, decreasing, stable]
+                  alerts:
+                    type: object
+                    properties:
+                      active:
+                        type: integer
+                      critical:
+                        type: integer
+                      acknowledged:
+                        type: integer
+                  vessels:
+                    type: object
+                    properties:
+                      tracked:
+                        type: integer
+                      unlicensed:
+                        type: integer
+                  enforcement:
+                    type: object
+                    properties:
+                      avgResponseMinutes:
+                        type: number
+                      activePatrols:
+                        type: integer
+                  hotspots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Hotspot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== WEBHOOKS ENDPOINTS ====================
+  /webhooks/subscriptions:
+    get:
+      tags:
+        - Webhooks
+      summary: List webhook subscriptions
+      description: Get all registered webhook endpoints (enforcement only)
+      operationId: listWebhooks
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Webhook subscriptions retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags:
+        - Webhooks
+      summary: Create webhook subscription
+      description: Register endpoint to receive real-time alerts
+      operationId: createWebhook
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - events
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: Endpoint to receive webhook payloads
+                  example: "https://enforcement.gov.ke/webhooks/bahariwatch"
+                events:
+                  type: array
+                  items:
+                    type: string
+                    enum: [alert.created, alert.critical, report.verified, match.found]
+                  description: Events to subscribe to
+                secret:
+                  type: string
+                  description: Secret for HMAC signature verification
+                filters:
+                  type: object
+                  properties:
+                    severity:
+                      type: array
+                      items:
+                        type: string
+                    counties:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        '201':
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /webhooks/subscriptions/{webhookId}:
+    delete:
+      tags:
+        - Webhooks
+      summary: Delete webhook subscription
+      operationId: deleteWebhook
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Webhook deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/test:
+    post:
+      tags:
+        - Webhooks
+      summary: Test webhook delivery
+      description: Send test payload to verify webhook configuration
+      operationId: testWebhook
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - webhookId
+              properties:
+                webhookId:
+                  type: string
+      responses:
+        '200':
+          description: Test payload sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered:
+                    type: boolean
+                  statusCode:
+                    type: integer
+                  responseTime:
+                    type: number
+                    description: Response time in milliseconds
+                  error:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== AUDIT ENDPOINTS ====================
+  /audit/logs:
+    get:
+      tags:
+        - Audit
+      summary: Get audit logs
+      description: Access logs for compliance (admin only)
+      operationId: getAuditLogs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: userId
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+            enum: [report.create, report.verify, alert.acknowledge, user.login, data.export, data.delete]
+      responses:
+        '200':
+          description: Audit logs retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  nextCursor:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /audit/exports:
+    post:
+      tags:
+        - Audit
+      summary: Export audit data
+      description: Generate GDPR compliance export
+      operationId: exportAuditData
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreferHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - format
+              properties:
+                format:
+                  type: string
+                  enum: [csv, json, pdf]
+                startDate:
+                  type: string
+                  format: date-time
+                endDate:
+                  type: string
+                  format: date-time
+                includeReports:
+                  type: boolean
+                  default: true
+                includeAlerts:
+                  type: boolean
+                  default: true
+      responses:
+        '202':
+          description: Export job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued, processing]
+                  estimatedCompletionAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /audit/exports/{jobId}:
+    get:
+      tags:
+        - Audit
+      summary: Get export status
+      operationId: getExportStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Export status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued, processing, completed, failed]
+                  downloadUrl:
+                    type: string
+                    description: Available when status is completed
+                  expiresAt:
+                    type: string
+                    format: date-time
+                  error:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== SEARCH ENDPOINTS ====================
+  /search/global:
+    get:
+      tags:
+        - Search
+      summary: Cross-entity search
+      description: Search across reports, vessels, and alerts
+      operationId: globalSearch
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query
+          example: "trawler kilifi"
+        - name: type
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [reports, vessels, alerts]
+          description: Entity types to search
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reports:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Report'
+                  vessels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Vessel'
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+                  total:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /search/suggest:
+    get:
+      tags:
+        - Search
+      summary: Search autocomplete
+      description: Get suggestions for vessel names
+      operationId: searchSuggest
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Partial query
+          example: "fish"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text:
+                          type: string
+                        type:
+                          type: string
+                          enum: [vessel, location, county]
+                        vesselId:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== BATCH ENDPOINTS ====================
+  /batch/reports/verify:
+    post:
+      tags:
+        - Batch
+      summary: Bulk verify reports
+      description: Verify multiple reports at once (BMU only)
+      operationId: bulkVerifyReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reportIds
+                - status
+              properties:
+                reportIds:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 100
+                status:
+                  type: string
+                  enum: [verified, false_positive]
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Bulk operation completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processed:
+                    type: integer
+                  successful:
+                    type: integer
+                  failed:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        reportId:
+                          type: string
+                        status:
+                          type: string
+                          enum: [success, failed]
+                        error:
+                          type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /batch/reports/export:
+    post:
+      tags:
+        - Batch
+      summary: Bulk export reports
+      description: Export reports to CSV/Excel
+      operationId: bulkExportReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreferHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - format
+              properties:
+                format:
+                  type: string
+                  enum: [csv, xlsx]
+                filters:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                    startDate:
+                      type: string
+                      format: date-time
+                    endDate:
+                      type: string
+                      format: date-time
+                    county:
+                      type: string
+      responses:
+        '202':
+          description: Export job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  downloadUrl:
+                    type: string
+                    description: Available immediately for small datasets
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /batch/matches/dismiss:
+    post:
+      tags:
+        - Batch
+      summary: Bulk dismiss matches
+      description: Dismiss multiple false positive matches
+      operationId: bulkDismissMatches
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - matchIds
+              properties:
+                matchIds:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 100
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Matches dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dismissed:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== SYSTEM ENDPOINTS ====================
+  /health:
+    get:
+      tags:
+        - System
+      summary: Health check (liveness)
+      description: Basic health check for load balancers
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /health/ready:
+    get:
+      tags:
+        - System
+      summary: Readiness check
+      description: Check if service is ready to accept traffic
+      operationId: getReadiness
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  dependencies:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [up, down]
+                      redis:
+                        type: string
+                        enum: [up, down]
+                      ais:
+                        type: string
+                        enum: [up, down]
+        '503':
+          description: Service not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [not_ready]
+                  dependencies:
+                    type: object
+
+  /metrics:
+    get:
+      tags:
+        - System
+      summary: Prometheus metrics
+      description: Metrics endpoint for monitoring
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP api_requests_total Total API requests
+                # TYPE api_requests_total counter
+                api_requests_total{method="POST",endpoint="/reports",status="201"} 1523
+
+  /version:
+    get:
+      tags:
+        - System
+      summary: API version info
+      operationId: getVersion
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  buildDate:
+                    type: string
+                    format: date-time
+                  commit:
+                    type: string
+                  environment:
+                    type: string
+                    enum: [production, staging, development]
+
+  /system/integrations/status:
+    get:
+      tags:
+        - System
+      summary: External integrations status
+      description: Health of AIS/VMS/PDS integrations
+      operationId: getIntegrationStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Integration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ais:
+                    $ref: '#/components/schemas/IntegrationStatus'
+                  vms:
+                    $ref: '#/components/schemas/IntegrationStatus'
+                  pds:
+                    $ref: '#/components/schemas/IntegrationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== API KEYS ENDPOINTS ====================
+  /api-keys:
+    get:
+      tags:
+        - API Keys
+      summary: List API keys
+      description: Get all API keys (admin only)
+      operationId: listApiKeys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: API keys retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags:
+        - API Keys
+      summary: Create API key
+      description: Generate API key for system integrations
+      operationId: createApiKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - scopes
+              properties:
+                name:
+                  type: string
+                  description: Descriptive name
+                  example: "PDS Integration"
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  example: ["vessel:write", "vessel:read"]
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: Optional expiration date
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  key:
+                    type: string
+                    description: API key (only shown once)
+                  name:
+                    type: string
+                  scopes:
+                    type: array
+                    items:
+                      type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api-keys/{keyId}:
+    delete:
+      tags:
+        - API Keys
+      summary: Revoke API key
+      operationId: revokeApiKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: API key revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+# ==================== COMPONENTS ====================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token obtained from /users/login or /users/register.
+        Format: Authorization: Bearer <token>
+
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for system integrations (AIS/VMS/PDS)
+
+  parameters:
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      schema:
+        type: string
+        format: uuid
+      description: Unique key to prevent duplicate operations
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    OfflineTimestampHeader:
+      name: X-Offline-Timestamp
+      in: header
+      schema:
+        type: string
+        format: date-time
+      description: Original capture time when offline
+
+    AcceptLanguageHeader:
+      name: Accept-Language
+      in: header
+      schema:
+        type: string
+        enum: [en, sw]
+        default: en
+      description: Response language (English or Swahili)
+
+    FilterParam:
+      name: $filter
+      in: query
+      schema:
+        type: string
+      description: |
+        OData-style filter expression. Supports standard OData operators and functions.
+        
+        **Supported Comparison Operators:**
+        - `eq` - equals
+        - `ne` - not equals
+        - `gt` - greater than
+        - `ge` - greater than or equal
+        - `lt` - less than
+        - `le` - less than or equal
+        
+        **Supported Logical Operators:**
+        - `and` - logical AND
+        - `or` - logical OR
+        - `not` - logical NOT
+        
+        **Supported Functions:**
+        - `contains(field, 'value')` - substring match
+        - `startswith(field, 'value')` - starts with
+        - `endswith(field, 'value')` - ends with
+        
+        **Examples:**
+        - `status eq 'verified'` - Filter by exact status
+        - `location/latitude gt -4.5` - Filter by coordinate
+        - `status eq 'verified' and timestamp gt '2025-01-01'` - Combined filters
+        - `contains(notes, 'trawler')` - Text search in notes
+        - `county eq 'Kilifi' or county eq 'Mombasa'` - Multiple counties
+      example: "status eq 'verified' and location/latitude gt -4.5"
+
+    CursorParam:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Cursor for pagination
+
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        maximum: 100
+      description: Number of items to return
+
+    OrderByParam:
+      name: $orderby
+      in: query
+      schema:
+        type: string
+      description: Sort order
+      example: "timestamp desc"
+
+    CountParam:
+      name: $count
+      in: query
+      schema:
+        type: boolean
+        default: false
+      description: |
+        Request total count of matching items in response (OData standard).
+        When true, response includes `@odata.count` field with total item count.
+        Note: This may impact performance for large datasets.
+      example: true
+
+    PreferHeader:
+      name: Prefer
+      in: header
+      schema:
+        type: string
+        enum: ['respond-async', 'wait=10', 'wait=30', 'wait=60']
+      description: |
+        Client preference for async response handling (RFC 7240).
+        
+        **Options:**
+        - `respond-async` - Return 202 Accepted immediately for long operations
+        - `wait=n` - Wait up to n seconds before returning 202
+        
+        **Use cases:**
+        - Batch operations
+        - Complex matching processes
+        - Large data exports
+      example: "respond-async"
+
+  headers:
+    Cache-Control:
+      schema:
+        type: string
+        example: "no-cache, no-store, must-revalidate"
+      description: |
+        Caching directives for the response.
+        
+        **Common values:**
+        - `no-cache, no-store, must-revalidate` - Sensitive data (default for authenticated endpoints)
+        - `public, max-age=300` - Public data cacheable for 5 minutes
+        - `private, max-age=60` - User-specific data cacheable for 1 minute
+
+    X-RateLimit-Limit:
+      schema:
+        type: integer
+      description: Request limit per hour
+      example: 10
+
+    X-RateLimit-Remaining:
+      schema:
+        type: integer
+      description: Remaining requests
+      example: 7
+
+    X-RateLimit-Reset:
+      schema:
+        type: integer
+      description: Unix timestamp when limit resets
+      example: 1684156800
+
+  schemas:
+    # ==================== CORE SCHEMAS ====================
+    GeoLocation:
+      type: object
+      required:
+        - latitude
+        - longitude
+      properties:
+        latitude:
+          type: number
+          format: double
+          minimum: -4.7
+          maximum: -1.0
+          description: Latitude (Kenya EEZ bounds)
+          example: -4.0435
+        longitude:
+          type: number
+          format: double
+          minimum: 39.0
+          maximum: 42.0
+          description: Longitude (Kenya EEZ bounds)
+          example: 39.6682
+        accuracy:
+          type: number
+          description: GPS accuracy in meters
+          example: 15.5
+
+    Report:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "rpt-20250515-001"
+        userId:
+          type: string
+          description: Anonymous hash identifier
+          example: "anon-a3f2b1c04d5e"
+        location:
+          $ref: '#/components/schemas/GeoLocation'
+        photoUrl:
+          type: string
+          description: Signed URL for photo access (time-limited)
+          example: "/media/reports/rpt-001.jpg?expires=...&sig=..."
+        timestamp:
+          type: string
+          format: date-time
+          description: When report was submitted
+        observedAt:
+          type: string
+          format: date-time
+          description: When incident was observed
+        notes:
+          type: string
+          maxLength: 500
+        status:
+          type: string
+          enum: [pending, verified, false_positive, resolved]
+        county:
+          type: string
+          enum: [Lamu, Kilifi, Mombasa, Kwale, "Tana River"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ReportDetail:
+      allOf:
+        - $ref: '#/components/schemas/Report'
+        - type: object
+          properties:
+            matches:
+              type: array
+              items:
+                $ref: '#/components/schemas/Match'
+            verificationHistory:
+              type: array
+              items:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  updatedBy:
+                    type: string
+                  notes:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+    ReportCollection:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/Report'
+          description: Array of report objects
+        '@odata.nextLink':
+          type: string
+          format: uri
+          description: URL to the next page of results (OData standard)
+          example: "https://api.bahariwatch.ke/v1/reports?cursor=eyJpZCI6InJwdC0wMDIifQ"
+        nextCursor:
+          type: string
+          description: Pagination cursor (alternative to @odata.nextLink for non-OData clients)
+          example: "eyJpZCI6InJwdC0wMDIifQ"
+        '@odata.count':
+          type: integer
+          description: Total count of matching items (when requested with $count=true)
+          example: 1250
+        count:
+          type: integer
+          description: Total count of matching items (alternative to @odata.count)
+          example: 1250
+
+    Vessel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Vessel identifier (MMSI or IMO)
+          example: "440012345"
+        name:
+          type: string
+          example: "FISHING VESSEL 123"
+        mmsi:
+          type: string
+        imo:
+          type: string
+        callSign:
+          type: string
+        flag:
+          type: string
+          example: "KE"
+        vesselType:
+          type: string
+          example: "Fishing"
+        length:
+          type: number
+          description: Length in meters
+        lastPosition:
+          $ref: '#/components/schemas/GeoLocation'
+        lastSeen:
+          type: string
+          format: date-time
+        speed:
+          type: number
+          description: Speed in knots
+        course:
+          type: number
+          description: Course in degrees
+        licensed:
+          type: boolean
+          description: Whether vessel has valid fishing license
+
+    VesselDetail:
+      allOf:
+        - $ref: '#/components/schemas/Vessel'
+        - type: object
+          properties:
+            owner:
+              type: string
+            registrationDate:
+              type: string
+              format: date
+            licenseExpiry:
+              type: string
+              format: date
+            recentIncidents:
+              type: array
+              items:
+                type: object
+                properties:
+                  reportId:
+                    type: string
+                  date:
+                    type: string
+                    format: date-time
+                  status:
+                    type: string
+
+    VesselCollection:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vessel'
+          description: Array of vessel objects
+        '@odata.nextLink':
+          type: string
+          format: uri
+          description: URL to the next page of results
+          example: "https://api.bahariwatch.ke/v1/vessels?cursor=eyJpZCI6IjQ0MDAxMjM0NSJ9"
+        nextCursor:
+          type: string
+          description: Pagination cursor
+          example: "eyJpZCI6IjQ0MDAxMjM0NSJ9"
+        '@odata.count':
+          type: integer
+          description: Total count of matching vessels
+          example: 523
+        count:
+          type: integer
+          description: Total count of matching vessels
+          example: 523
+
+    VesselTrack:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        location:
+          $ref: '#/components/schemas/GeoLocation'
+        speed:
+          type: number
+        course:
+          type: number
+        heading:
+          type: number
+
+    Match:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "match-001"
+        reportId:
+          type: string
+        vesselId:
+          type: string
+        confidence:
+          type: string
+          enum: [high, medium, low]
+          description: Match confidence level
+        spatialDistance:
+          type: number
+          description: Distance between report and vessel position (km)
+        temporalDistance:
+          type: number
+          description: Time difference (minutes)
+        matchedAt:
+          type: string
+          format: date-time
+        dismissed:
+          type: boolean
+          default: false
+        details:
+          type: object
+          properties:
+            reportLocation:
+              $ref: '#/components/schemas/GeoLocation'
+            vesselLocation:
+              $ref: '#/components/schemas/GeoLocation'
+            reportTime:
+              type: string
+              format: date-time
+            vesselTime:
+              type: string
+              format: date-time
+
+    MatchCollection:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/Match'
+          description: Array of match objects
+        '@odata.nextLink':
+          type: string
+          format: uri
+          description: URL to the next page of results
+          example: "https://api.bahariwatch.ke/v1/matches?cursor=eyJpZCI6Im1hdGNoLTAwMSJ9"
+        nextCursor:
+          type: string
+          description: Pagination cursor
+          example: "eyJpZCI6Im1hdGNoLTAwMSJ9"
+        '@odata.count':
+          type: integer
+          description: Total count of matching items
+          example: 342
+        count:
+          type: integer
+          description: Total count of matching items
+          example: 342
+
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "alert-001"
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        type:
+          type: string
+          enum: [unlicensed_vessel, prohibited_gear, protected_area, multiple_reports]
+        matchId:
+          type: string
+        reportId:
+          type: string
+        vesselId:
+          type: string
+        location:
+          $ref: '#/components/schemas/GeoLocation'
+        description:
+          type: string
+        acknowledged:
+          type: boolean
+        acknowledgedBy:
+          type: string
+        acknowledgedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    AlertCollection:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+          description: Array of alert objects
+        '@odata.nextLink':
+          type: string
+          format: uri
+          description: URL to the next page of results
+          example: "https://api.bahariwatch.ke/v1/alerts?cursor=eyJpZCI6ImFsZXJ0LTAwMSJ9"
+        nextCursor:
+          type: string
+          description: Pagination cursor
+          example: "eyJpZCI6ImFsZXJ0LTAwMSJ9"
+        '@odata.count':
+          type: integer
+          description: Total count of matching alerts
+          example: 89
+        count:
+          type: integer
+          description: Total count of matching alerts
+          example: 89
+
+    EnforcementAction:
+      type: object
+      required:
+        - actionType
+        - description
+      properties:
+        id:
+          type: string
+        alertId:
+          type: string
+        actionType:
+          type: string
+          enum: [patrol_dispatched, vessel_inspected, citation_issued, arrest_made, no_action]
+        description:
+          type: string
+        officerId:
+          type: string
+        location:
+          $ref: '#/components/schemas/GeoLocation'
+        timestamp:
+          type: string
+          format: date-time
+        outcome:
+          type: string
+        evidenceUrls:
+          type: array
+          items:
+            type: string
+
+    PatrolLog:
+      type: object
+      properties:
+        id:
+          type: string
+        officerId:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        route:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeoLocation'
+        vesselsInspected:
+          type: integer
+        findings:
+          type: array
+          items:
+            type: string
+        alertsResponded:
+          type: array
+          items:
+            type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Anonymous user identifier
+        role:
+          type: string
+          enum: [community_reporter, bmu_officer, enforcement_agent, admin]
+        region:
+          type: string
+        reportCount:
+          type: integer
+        verifiedReportCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        tokenType:
+          type: string
+          example: "Bearer"
+        expiresIn:
+          type: integer
+          description: Token expiry in seconds
+          example: 900
+        scope:
+          type: string
+          description: Space-separated OAuth2 scopes
+          example: "report:create report:read:own"
+
+    NotificationSettings:
+      type: object
+      properties:
+        alertOnVerification:
+          type: boolean
+          default: true
+        alertOnMatch:
+          type: boolean
+          default: true
+        alertSeverityThreshold:
+          type: string
+          enum: [all, high, critical]
+          default: all
+        quietHoursStart:
+          type: string
+          format: time
+          example: "22:00"
+        quietHoursEnd:
+          type: string
+          format: time
+          example: "07:00"
+        language:
+          type: string
+          enum: [en, sw]
+          default: en
+
+    Hotspot:
+      type: object
+      properties:
+        id:
+          type: string
+        center:
+          $ref: '#/components/schemas/GeoLocation'
+        radius:
+          type: number
+          description: Hotspot radius in kilometers
+        incidentCount:
+          type: integer
+        verifiedCount:
+          type: integer
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        timeRange:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+
+    WebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        filters:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+        lastDeliveryAt:
+          type: string
+          format: date-time
+        failureCount:
+          type: integer
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        resourceId:
+          type: string
+        ipAddress:
+          type: string
+        userAgent:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        details:
+          type: object
+        success:
+          type: boolean
+
+    IntegrationStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [operational, degraded, down]
+        lastSync:
+          type: string
+          format: date-time
+        nextSync:
+          type: string
+          format: date-time
+        errorRate:
+          type: number
+          description: Percentage of failed requests
+        latencyMs:
+          type: number
+          description: Average response time in milliseconds
+        message:
+          type: string
+
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        keyPrefix:
+          type: string
+          description: First 8 characters of key
+        scopes:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: "InvalidLocation"
+            message:
+              type: string
+              example: "GPS coordinates are outside Kenya's EEZ"
+            target:
+              type: string
+              description: Field that caused the error
+              example: "location"
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                  target:
+                    type: string
+            innerError:
+              type: object
+              description: |
+                Detailed error information for debugging (should be stripped for external consumers).
+                Contains stack traces, internal error codes, and diagnostic data.
+              properties:
+                code:
+                  type: string
+                  description: Internal error code
+                  example: "DB_CONNECTION_TIMEOUT"
+                trace:
+                  type: array
+                  description: Stack trace (development only)
+                  items:
+                    type: string
+                context:
+                  type: object
+                  description: Additional debugging context
+                  additionalProperties: true
+
+  # ==================== REUSABLE RESPONSES ====================
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            validationError:
+              summary: Multiple validation errors
+              value:
+                error:
+                  code: "ValidationError"
+                  message: "Request validation failed"
+                  details:
+                    - code: "RequiredField"
+                      message: "location is required"
+                      target: "location"
+                    - code: "InvalidValue"
+                      message: "latitude must be between -4.7 and -1.0 (Kenya EEZ)"
+                      target: "location.latitude"
+            locationOutOfBounds:
+              summary: Location outside Kenya EEZ
+              value:
+                error:
+                  code: "InvalidLocation"
+                  message: "GPS coordinates are outside Kenya's Exclusive Economic Zone"
+                  target: "location"
+                  details:
+                    - code: "OutOfBounds"
+                      message: "Latitude -5.5 is outside allowed range [-4.7, -1.0]"
+                      target: "location.latitude"
+            invalidFileType:
+              summary: Invalid photo format
+              value:
+                error:
+                  code: "InvalidFileType"
+                  message: "Only JPEG and PNG images are supported"
+                  target: "photo"
+
+    Unauthorized:
+      description: Authentication required or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: "Unauthorized"
+              message: "Valid authentication token required"
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: "Forbidden"
+              message: "User does not have required permissions"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: "NotFound"
+              message: "Resource not found"
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+            example: 0
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/X-RateLimit-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: "RateLimitExceeded"
+              message: "Maximum 10 reports per hour exceeded"
+              details:
+                - code: "TooManyRequests"
+                  message: "Retry after 1684156800"
+
+# ==================== SECURITY ====================
+security:
+  - bearerAuth: []
