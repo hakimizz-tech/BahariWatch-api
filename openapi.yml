@@ -40,6 +40,27 @@ info:
     - Language: Use `Accept-Language` header for English (`en`) or Swahili (`sw`)
     - Character Encoding: UTF-8
     - Use `Accept` header to specify response format (currently only `application/json` supported)
+    
+    **Data Consistency Model:**
+    This API uses an event-driven architecture with **eventual consistency**.
+    
+    **Important Behaviors:**
+    - Reports submitted via `/sync/reports/batch` may take 5-30 seconds to appear in GET `/reports`
+    - Single reports via POST `/reports` are processed asynchronously when using `Prefer: respond-async`
+    - Vessel matches are computed asynchronously (typically within 1-2 minutes of report submission)
+    - Alerts are generated after matching completes
+    - Photo processing (EXIF stripping, compression) happens in background
+    
+    **For Real-Time Updates:**
+    - Subscribe to webhooks for immediate notifications when processing completes
+    - Poll GET `/reports/{reportId}` to check specific report status
+    - Use `processingStatus` field to determine when processing is complete
+    
+    **Processing SLAs:**
+    - Report acceptance: < 500ms (with `Prefer: respond-async`)
+    - Photo processing: 2-10 seconds
+    - Vessel matching: 30-120 seconds
+    - Alert generation: < 5 seconds after match
   contact:
     name: joshua kimathi
     email: joshua@kabark.ac.ke
@@ -87,6 +108,23 @@ tags:
       expected = "sha256=" + hex(signature)
       assert expected == request.headers['X-Webhook-Signature']
       ```
+      
+      **Delivery Guarantees:**
+      - **At-least-once delivery** (duplicates possible, use `eventId` for deduplication)
+      - **Automatic retries** with exponential backoff for failed deliveries
+      - **Retry schedule:** 1 minute, 5 minutes, 15 minutes, 1 hour, 6 hours (max 5 attempts)
+      - After 5 consecutive failures, webhook is marked as `failing` and retries stop
+      - Manual retry available via API after addressing delivery issues
+      
+      **Idempotency:**
+      - Each webhook payload includes unique `eventId` for deduplication
+      - Use `X-Webhook-Delivery-Attempt` header to track retry count
+      - First delivery has attempt=1, subsequent retries increment this value
+      
+      **Debugging:**
+      - View recent delivery history via GET `/webhooks/subscriptions/{webhookId}/deliveries`
+      - Check delivery status codes and error messages
+      - Manually retry failed deliveries
   - name: Audit
     description: Compliance and audit trail
   - name: Search
@@ -109,6 +147,15 @@ paths:
         Allows community members to submit geotagged photographic evidence of suspected IUU fishing.
         Photos are automatically stripped of EXIF metadata to protect reporter privacy.
         
+        **Processing Model:**
+        - Use `Prefer: respond-async` for asynchronous processing (recommended for mobile clients)
+        - Without Prefer header: Returns 201 if processing completes quickly (< 2 seconds)
+        - With Prefer header: Always returns 202 and processes in background
+        
+        **Background Processing:**
+        Photo processing (EXIF stripping, compression, storage) and vessel matching happen asynchronously.
+        Use webhooks or poll GET `/reports/{reportId}` to check processing status.
+        
         **Offline Support:** Include `X-Offline-Timestamp` header with original capture time.
         **Idempotency:** Use `Idempotency-Key` header to prevent duplicate submissions.
       operationId: createReport
@@ -117,6 +164,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
         - $ref: '#/components/parameters/OfflineTimestampHeader'
+        - $ref: '#/components/parameters/PreferHeader'
         - $ref: '#/components/parameters/AcceptLanguageHeader'
       requestBody:
         required: true
@@ -176,8 +224,56 @@ paths:
                 notes: "Large trawler fishing in prohibited zone"
                 status: "pending"
                 county: "Kilifi"
+                processingStatus: "completed"
                 createdAt: "2025-05-15T14:30:00Z"
                 updatedAt: "2025-05-15T14:30:00Z"
+        '202':
+          description: |
+            Report accepted for asynchronous processing (when using Prefer: respond-async).
+            The report is queued for background processing including photo handling and vessel matching.
+            Poll the status endpoint or subscribe to webhooks for completion notification.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+            Location:
+              description: URI of the created report
+              schema:
+                type: string
+                format: uri
+              example: "https://api.bahariwatch.ke/v1/reports/rpt-20250515-001"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "rpt-20250515-001"
+                  status:
+                    type: string
+                    example: "pending"
+                  processingStatus:
+                    type: string
+                    enum: [pending, processing]
+                    example: "pending"
+                  statusUrl:
+                    type: string
+                    format: uri
+                    description: URL to check processing status
+                    example: "https://api.bahariwatch.ke/v1/reports/rpt-20250515-001"
+                  message:
+                    type: string
+                    example: "Report accepted and queued for processing"
+              example:
+                id: "rpt-20250515-001"
+                status: "pending"
+                processingStatus: "pending"
+                statusUrl: "https://api.bahariwatch.ke/v1/reports/rpt-20250515-001"
+                message: "Report accepted and queued for processing"
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2127,6 +2223,122 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /webhooks/subscriptions/{webhookId}/deliveries:
+    get:
+      tags:
+        - Webhooks
+      summary: Get webhook delivery history
+      description: |
+        View recent webhook delivery attempts for debugging and monitoring.
+        Includes success/failure status, response codes, and retry information.
+      operationId: getWebhookDeliveries
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, failed, pending_retry]
+          description: Filter by delivery status
+      responses:
+        '200':
+          description: Delivery history retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookDelivery'
+                  nextCursor:
+                    type: string
+              example:
+                value:
+                  - deliveryId: "del-001"
+                    eventType: "report.verified"
+                    eventId: "evt-abc123"
+                    deliveredAt: "2025-05-15T14:30:00Z"
+                    status: "success"
+                    statusCode: 200
+                    attempts: 1
+                    responseTime: 245
+                  - deliveryId: "del-002"
+                    eventType: "alert.created"
+                    eventId: "evt-def456"
+                    deliveredAt: "2025-05-15T14:31:00Z"
+                    status: "failed"
+                    statusCode: 503
+                    attempts: 2
+                    nextRetryAt: "2025-05-15T14:36:00Z"
+                    errorMessage: "Service temporarily unavailable"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/subscriptions/{webhookId}/deliveries/{deliveryId}/retry:
+    post:
+      tags:
+        - Webhooks
+      summary: Manually retry failed webhook delivery
+      description: |
+        Force immediate retry of a failed webhook delivery.
+        Useful after fixing endpoint issues or temporary outages.
+      operationId: retryWebhookDelivery
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: deliveryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Retry queued successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Delivery retry queued"
+                  deliveryId:
+                    type: string
+                    example: "del-002"
+                  estimatedRetryTime:
+                    type: string
+                    format: date-time
+        '400':
+          description: Delivery cannot be retried (e.g., already succeeded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /webhooks/test:
     post:
       tags:
@@ -3000,6 +3212,30 @@ components:
       description: Unix timestamp when limit resets
       example: 1684156800
 
+    X-Webhook-Signature:
+      schema:
+        type: string
+      description: |
+        HMAC-SHA256 signature of webhook payload for verification.
+        Format: `sha256=<hex_signature>`
+        Calculate: HMAC_SHA256(webhook_secret, request_body)
+      example: "sha256=a3f2b1c04d5e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0"
+
+    X-Webhook-Delivery-Attempt:
+      schema:
+        type: integer
+      description: |
+        Delivery attempt number. First delivery is 1, increments with each retry.
+        Use this to detect and handle retries appropriately.
+      example: 1
+
+    X-Webhook-Event-Id:
+      schema:
+        type: string
+      description: |
+        Unique event identifier for idempotency. Use this to deduplicate webhook events.
+      example: "evt-abc123"
+
   schemas:
     # ==================== CORE SCHEMAS ====================
     GeoLocation:
@@ -3057,6 +3293,21 @@ components:
         status:
           type: string
           enum: [pending, verified, false_positive, resolved]
+          description: Verification status by BMU officers
+        processingStatus:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: |
+            Current processing state of the report.
+            - `pending`: Report accepted, not yet processed
+            - `processing`: Photo processing and matching in progress
+            - `completed`: All processing finished successfully
+            - `failed`: Processing encountered an error
+          example: "completed"
+        processedAt:
+          type: string
+          format: date-time
+          description: When report processing completed (null if still processing)
         county:
           type: string
           enum: [Lamu, Kilifi, Mombasa, Kwale, "Tana River"]
@@ -3517,10 +3768,20 @@ components:
           type: array
           items:
             type: string
+            enum: [report.created, report.verified, report.updated, alert.created, alert.acknowledged, match.found, vessel.detected]
         active:
           type: boolean
         filters:
           type: object
+          properties:
+            counties:
+              type: array
+              items:
+                type: string
+            severities:
+              type: array
+              items:
+                type: string
         createdAt:
           type: string
           format: date-time
@@ -3529,6 +3790,106 @@ components:
           format: date-time
         failureCount:
           type: integer
+          description: Number of consecutive failed deliveries
+        status:
+          type: string
+          enum: [active, failing, disabled]
+          description: |
+            Webhook subscription status:
+            - `active`: Operating normally
+            - `failing`: Experiencing delivery failures (after 5 consecutive failures)
+            - `disabled`: Manually disabled by user
+
+    WebhookDelivery:
+      type: object
+      properties:
+        deliveryId:
+          type: string
+          description: Unique identifier for this delivery attempt
+          example: "del-001"
+        eventId:
+          type: string
+          description: Unique event identifier for idempotency
+          example: "evt-abc123"
+        eventType:
+          type: string
+          description: Type of event that triggered the webhook
+          enum: [report.created, report.verified, report.updated, alert.created, alert.acknowledged, match.found, vessel.detected]
+          example: "report.verified"
+        deliveredAt:
+          type: string
+          format: date-time
+          description: When the delivery attempt was made
+        status:
+          type: string
+          enum: [success, failed, pending_retry]
+          description: Delivery status
+        statusCode:
+          type: integer
+          description: HTTP status code returned by webhook endpoint
+          example: 200
+        attempts:
+          type: integer
+          description: Number of delivery attempts made
+          example: 1
+        nextRetryAt:
+          type: string
+          format: date-time
+          description: When the next retry will be attempted (if status is pending_retry)
+        responseTime:
+          type: integer
+          description: Response time in milliseconds
+          example: 245
+        errorMessage:
+          type: string
+          description: Error message if delivery failed
+          example: "Connection timeout"
+        payload:
+          type: object
+          description: The webhook payload that was sent
+          properties:
+            eventId:
+              type: string
+            eventType:
+              type: string
+            timestamp:
+              type: string
+            attemptNumber:
+              type: integer
+            data:
+              type: object
+
+    WebhookPayload:
+      type: object
+      description: Standard webhook payload structure sent to subscribed endpoints
+      required:
+        - eventId
+        - eventType
+        - timestamp
+        - attemptNumber
+        - data
+      properties:
+        eventId:
+          type: string
+          description: Unique event identifier for idempotency/deduplication
+          example: "evt-abc123"
+        eventType:
+          type: string
+          description: Type of event
+          enum: [report.created, report.verified, report.updated, alert.created, alert.acknowledged, match.found, vessel.detected]
+          example: "report.verified"
+        timestamp:
+          type: string
+          format: date-time
+          description: When the event occurred
+        attemptNumber:
+          type: integer
+          description: Delivery attempt number (1 for first attempt, increments on retries)
+          example: 1
+        data:
+          type: object
+          description: Event-specific payload data
+          additionalProperties: true
 
     AuditLog:
       type: object
