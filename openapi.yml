@@ -35,6 +35,29 @@ info:
     Errors follow RFC 7807 problem details format with structured error objects.
     See Error schema for complete structure including `innerError` for debugging.
     
+    **Authentication Methods:**
+    The API supports two authentication methods to balance privacy and security:
+    
+    1. **Anonymous (Device-Based) Authentication** - For Community Reporters
+       - Privacy-first approach protecting reporter identity
+       - Uses device identifier for authentication
+       - Offline-capable with automatic sync
+       - Endpoints: `/users/register`, `/users/login`
+       - Recommended for: Community members reporting incidents
+    
+    2. **Google OAuth 2.0** - For Verified Users
+       - Enhanced security for official accounts
+       - Multi-device access and account recovery
+       - Email notifications and cross-platform sync
+       - Endpoints: `/users/auth/google`, `/users/auth/google/link`
+       - Required for: BMU officers, enforcement agents, admins
+       - Optional for: Community reporters who want verified accounts
+    
+    **Authentication Strategy:**
+    - Anonymous auth preserves reporter safety in sensitive areas
+    - Google OAuth enables accountability for official actions
+    - Accounts can be linked: start anonymous, upgrade to verified later
+    
     **Content Negotiation:**
     - Request/Response Format: `application/json` (primary and only supported format)
     - Language: Use `Accept-Language` header for English (`en`) or Swahili (`sw`)
@@ -1607,6 +1630,169 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /users/auth/google:
+    post:
+      tags:
+        - Users
+      summary: Authenticate with Google OAuth 2.0
+      description: |
+        OAuth 2.0 authentication for verified users (BMU officers, enforcement agents).
+        
+        **Process:**
+        1. Client redirects user to Google OAuth consent screen
+        2. User authorizes the application
+        3. Google redirects back with authorization code
+        4. Client sends code to this endpoint
+        5. Server exchanges code for tokens and creates/links user account
+        
+        **User Role Assignment:**
+        - New users are created as `community_reporter` by default
+        - Contact admin to upgrade to `bmu_officer` or `enforcement_agent`
+        
+        **Privacy Note:**
+        This method is NOT anonymous. Only use for verified official accounts.
+      operationId: googleOAuth
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+              properties:
+                code:
+                  type: string
+                  description: Authorization code from Google OAuth callback
+                  example: "4/0AY0e-g7..."
+                redirectUri:
+                  type: string
+                  format: uri
+                  description: Redirect URI used in OAuth flow (must match registered URI)
+                  example: "https://app.bahariwatch.ke/auth/callback"
+      responses:
+        '200':
+          description: Successfully authenticated with Google
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AuthResponse'
+                  - type: object
+                    properties:
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          email:
+                            type: string
+                          displayName:
+                            type: string
+                          role:
+                            type: string
+                          authMethod:
+                            type: string
+                            enum: [google]
+              example:
+                accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                tokenType: "Bearer"
+                expiresIn: 900
+                scope: "report:create report:read vessel:read"
+                user:
+                  id: "usr-google-abc123"
+                  email: "officer@bmu.ke"
+                  displayName: "John Kamau"
+                  role: "bmu_officer"
+                  authMethod: "google"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or expired authorization code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: "InvalidAuthCode"
+                  message: "Authorization code is invalid or expired"
+
+  /users/auth/google/link:
+    post:
+      tags:
+        - Users
+      summary: Link existing account to Google
+      description: |
+        Connect an existing anonymous account to a Google account for verified users.
+        
+        **Use Case:**
+        A community reporter who becomes a BMU officer can link their existing
+        reports to their official Google account.
+        
+        **Requirements:**
+        - Must be authenticated with existing account (device-based)
+        - Provides Google authorization code
+        - Account history is preserved
+      operationId: linkGoogleAccount
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+              properties:
+                code:
+                  type: string
+                  description: Authorization code from Google OAuth
+                redirectUri:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Account successfully linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+              example:
+                message: "Google account successfully linked"
+                user:
+                  id: "usr-google-abc123"
+                  email: "officer@bmu.ke"
+                  displayName: "John Kamau"
+                  role: "bmu_officer"
+                  authMethod: "google"
+                  linkedAt: "2025-10-01T14:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Google account already linked to another user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: "AccountAlreadyLinked"
+                  message: "This Google account is already linked to another user"
+
   /users/me:
     get:
       tags:
@@ -3056,8 +3242,33 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        JWT token obtained from /users/login or /users/register.
+        JWT token obtained from /users/login, /users/register, or /users/auth/google.
         Format: Authorization: Bearer <token>
+        
+        **Authentication Methods:**
+        - **Anonymous (Device-Based):** For community reporters - `/users/register`, `/users/login`
+        - **Google OAuth 2.0:** For verified users (BMU officers, enforcement) - `/users/auth/google`
+
+    googleOAuth:
+      type: oauth2
+      description: |
+        Google OAuth 2.0 authentication for verified users only (BMU officers, enforcement agents).
+        
+        **Use Cases:**
+        - Multi-device access for officials
+        - Enhanced security for enforcement actions
+        - Email notifications and account recovery
+        
+        **Not Available For:**
+        - Anonymous community reporters (use device-based auth)
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            openid: OpenID Connect
+            email: Access user email address
+            profile: Access basic profile information
 
     apiKeyAuth:
       type: apiKey
@@ -3670,16 +3881,53 @@ components:
       properties:
         id:
           type: string
-          description: Anonymous user identifier
+          description: User identifier (anonymous hash or Google-based)
+          example: "usr-google-abc123"
         role:
           type: string
           enum: [community_reporter, bmu_officer, enforcement_agent, admin]
+          description: |
+            User role determines permissions:
+            - `community_reporter`: Submit reports (anonymous or Google auth)
+            - `bmu_officer`: Verify reports, view vessels (Google auth recommended)
+            - `enforcement_agent`: Create alerts, dispatch patrols (Google auth required)
+            - `admin`: Full system access (Google auth required)
+        authMethod:
+          type: string
+          enum: [device, google]
+          description: |
+            Authentication method used:
+            - `device`: Anonymous device-based authentication
+            - `google`: Google OAuth 2.0 authentication
+          example: "google"
+        email:
+          type: string
+          format: email
+          description: Email address (only for Google authenticated users)
+          example: "officer@bmu.ke"
+        displayName:
+          type: string
+          description: Full name (only for Google authenticated users)
+          example: "John Kamau"
+        photoUrl:
+          type: string
+          format: uri
+          description: Profile photo URL (from Google)
+          example: "https://lh3.googleusercontent.com/..."
         region:
           type: string
+          enum: [Lamu, Kilifi, Mombasa, Kwale, "Tana River"]
+          description: Coastal county
         reportCount:
           type: integer
+          description: Total number of reports submitted
         verifiedReportCount:
           type: integer
+          description: Number of verified reports
+        linkedAt:
+          type: string
+          format: date-time
+          description: When Google account was linked (if applicable)
         createdAt:
           type: string
           format: date-time
