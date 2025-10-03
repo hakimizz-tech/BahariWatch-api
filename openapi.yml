@@ -9,7 +9,7 @@ info:
     **Key Features:**
     - Offline-first mobile reporting with automatic sync
     - Anonymous community reporting with privacy safeguards
-    - Real-time vessel tracking (AIS/VMS/PDS integration)
+    - Real-time vessel tracking (AIS/VMS and Global Fishing Watch integration)
     - Spatial-temporal matching engine
     - Enforcement alert system with action tracking
     - Comprehensive audit trails for research ethics compliance
@@ -105,7 +105,7 @@ tags:
   - name: Sync
     description: Offline synchronization operations
   - name: Vessels
-    description: AIS/VMS/PDS vessel tracking data
+    description: AIS/VMS and Global Fishing Watch vessel tracking data
   - name: Matches
     description: Report-vessel matching operations
   - name: Alerts
@@ -937,10 +937,479 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/VesselTrack'
+                  dataFreshness:
+                    type: string
+                    format: date-time
+                    description: When this tracking data was last updated from source (AIS/VMS/GFW)
+                  coverage:
+                    type: number
+                    description: AIS coverage percentage during this period
+                    example: 87.5
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /vessels/{vesselId}/events:
+    get:
+      tags:
+        - Vessels
+      summary: Get vessel activity events
+      description: |
+        Retrieve vessel activity events from Global Fishing Watch including:
+        - Fishing events (apparent fishing activity)
+        - Encounters (potential transshipment)
+        - Port visits
+        - Loitering events
+        - AIS gaps (intentional AIS disabling)
+      operationId: getVesselEvents
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vesselId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Vessel identifier (MMSI or IMO)
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Start date (YYYY-MM-DD)
+          example: "2024-01-01"
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: End date (YYYY-MM-DD)
+          example: "2024-12-31"
+        - name: eventTypes
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [fishing, encounters, port-visits, loitering, gaps]
+          style: form
+          explode: true
+          description: Filter by event types (default all types)
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Vessel events retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vesselId:
+                    type: string
+                  dateRange:
+                    type: object
+                    properties:
+                      from:
+                        type: string
+                        format: date
+                      to:
+                        type: string
+                        format: date
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VesselEvent'
+                  '@odata.nextLink':
+                    type: string
+                    format: uri
+                  nextCursor:
+                    type: string
+                  totalEvents:
+                    type: integer
+                  dataSource:
+                    type: string
+                    example: "global_fishing_watch"
+                  dataFreshness:
+                    type: string
+                    format: date-time
+                    description: When event data was last synced from GFW (up to 5 days lag)
+              examples:
+                fishingEvents:
+                  summary: Fishing events example
+                  value:
+                    vesselId: "701000948"
+                    dateRange:
+                      from: "2024-01-01"
+                      to: "2024-01-31"
+                    events:
+                      - eventId: "49c5ab5a5ba4139b15ca9c039b0ea4f7"
+                        eventType: "fishing"
+                        startTime: "2024-01-15T14:30:00Z"
+                        endTime: "2024-01-15T20:45:00Z"
+                        location:
+                          type: "Point"
+                          coordinates: [-1.7583, -39.8403]
+                        durationHours: 6.25
+                        distanceKm: 12.5
+                        averageSpeed: 2.1
+                        regions:
+                          eez: ["8466"]
+                          mpa: []
+                          rfmo: ["ICCAT"]
+                        distanceFromShore: 45.2
+                        authorized: true
+                    totalEvents: 47
+                    dataSource: "global_fishing_watch"
+                    dataFreshness: "2024-01-20T10:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+
+
+  /vessels/{vesselId}/risk-profile:
+    get:
+      tags:
+        - Vessels
+      summary: Get vessel risk assessment
+      description: |
+        Get comprehensive risk indicators from GFW Insights API including:
+        - IUU vessel list matches
+        - Fishing in no-take MPAs
+        - Fishing outside authorized areas
+        - AIS coverage metrics
+        - Authorization status
+      operationId: getVesselRiskProfile
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vesselId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Start date for risk analysis period
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+          description: End date for risk analysis period
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Risk profile retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vesselId:
+                    type: string
+                  vesselName:
+                    type: string
+                  assessmentPeriod:
+                    type: object
+                    properties:
+                      from:
+                        type: string
+                        format: date
+                      to:
+                        type: string
+                        format: date
+                  overallRiskLevel:
+                    type: string
+                    enum: [critical, high, medium, low, minimal]
+                    description: Computed overall risk level
+                  riskScore:
+                    type: number
+                    description: Risk score (0-100, higher = more risky)
+                    minimum: 0
+                    maximum: 100
+                  indicators:
+                    type: object
+                    properties:
+                      iuuListed:
+                        type: object
+                        properties:
+                          status:
+                            type: boolean
+                          currentListings:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                rfmo:
+                                  type: string
+                                  example: "ICCAT"
+                                listedSince:
+                                  type: string
+                                  format: date
+                          historicalCount:
+                            type: integer
+                            description: Number of times vessel appeared on IUU lists
+                      fishingInMPA:
+                        type: object
+                        properties:
+                          detected:
+                            type: boolean
+                          eventCount:
+                            type: integer
+                          mpas:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                mpaId:
+                                  type: string
+                                mpaName:
+                                  type: string
+                                eventDate:
+                                  type: string
+                                  format: date-time
+                      unauthorizedFishing:
+                        type: object
+                        properties:
+                          detected:
+                            type: boolean
+                          eventCount:
+                            type: integer
+                          areas:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                rfmo:
+                                  type: string
+                                eventDate:
+                                  type: string
+                                  format: date-time
+                                authorized:
+                                  type: boolean
+                      aisGaps:
+                        type: object
+                        properties:
+                          totalEvents:
+                            type: integer
+                          totalHours:
+                            type: number
+                          suspiciousGaps:
+                            type: integer
+                            description: Gaps >50NM from shore (intentional disabling)
+                      aisCoverage:
+                        type: object
+                        properties:
+                          percentage:
+                            type: number
+                            description: AIS coverage during voyages (0-100%)
+                            example: 78.5
+                          status:
+                            type: string
+                            enum: [excellent, good, fair, poor, very_poor]
+                          note:
+                            type: string
+                            example: "Lower coverage may indicate intentional AIS disabling"
+                      encounterActivity:
+                        type: object
+                        properties:
+                          totalEncounters:
+                            type: integer
+                          unauthorizedEncounters:
+                            type: integer
+                          suspiciousEncounters:
+                            type: integer
+                            description: Encounters far from shore with different RFMO vessels
+                  recommendations:
+                    type: array
+                    description: Recommended enforcement actions
+                    items:
+                      type: string
+                    example:
+                      - "Prioritize for inspection at next port visit"
+                      - "Verify fishing authorizations"
+                      - "Check vessel identity documents"
+                  dataSource:
+                    type: string
+                    example: "global_fishing_watch_insights_api"
+                  lastUpdated:
+                    type: string
+                    format: date-time
+              examples:
+                highRiskVessel:
+                  summary: High-risk vessel example
+                  value:
+                    vesselId: "701000948"
+                    vesselName: "SUSPICIOUS VESSEL"
+                    assessmentPeriod:
+                      from: "2024-01-01"
+                      to: "2024-12-31"
+                    overallRiskLevel: "high"
+                    riskScore: 75
+                    indicators:
+                      iuuListed:
+                        status: false
+                        currentListings: []
+                        historicalCount: 1
+                      fishingInMPA:
+                        detected: true
+                        eventCount: 3
+                        mpas:
+                          - mpaId: "555512344"
+                            mpaName: "Malindi Marine National Park"
+                            eventDate: "2024-03-15T08:30:00Z"
+                      unauthorizedFishing:
+                        detected: true
+                        eventCount: 5
+                        areas:
+                          - rfmo: "IOTC"
+                            eventDate: "2024-06-20T14:00:00Z"
+                            authorized: false
+                      aisGaps:
+                        totalEvents: 12
+                        totalHours: 147
+                        suspiciousGaps: 8
+                      aisCoverage:
+                        percentage: 45.2
+                        status: "poor"
+                        note: "Significantly below 75% threshold - possible intentional disabling"
+                      encounterActivity:
+                        totalEncounters: 15
+                        unauthorizedEncounters: 7
+                        suspiciousEncounters: 4
+                    recommendations:
+                      - "HIGH PRIORITY: Inspect at next port visit"
+                      - "Verify all fishing authorizations"
+                      - "Investigate AIS gaps and identity changes"
+                      - "Monitor for additional encounters"
+                    dataSource: "global_fishing_watch_insights_api"
+                    lastUpdated: "2025-01-02T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /vessels/{vesselId}/fishing-effort:
+    get:
+      tags:
+        - Vessels
+      summary: Get vessel fishing effort statistics
+      description: Retrieve aggregated fishing effort metrics for a specific vessel
+      operationId: getVesselFishingEffort
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vesselId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, year, region]
+          description: Aggregation period
+          example: "month"
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
+      responses:
+        '200':
+          description: Fishing effort statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vesselId:
+                    type: string
+                  dateRange:
+                    type: object
+                    properties:
+                      from:
+                        type: string
+                        format: date
+                      to:
+                        type: string
+                        format: date
+                  totalFishingHours:
+                    type: number
+                  averageFishingHoursPerDay:
+                    type: number
+                  fishingDays:
+                    type: integer
+                  breakdown:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        period:
+                          type: string
+                          description: Time period or region name
+                        fishingHours:
+                          type: number
+                        fishingEvents:
+                          type: integer
+                        regions:
+                          type: object
+                          properties:
+                            eez:
+                              type: array
+                              items:
+                                type: string
+                            mpa:
+                              type: array
+                              items:
+                                type: string
+                  topFishingAreas:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        eezName:
+                          type: string
+                        eezId:
+                          type: string
+                        fishingHours:
+                          type: number
+                        percentage:
+                          type: number
+                  dataSource:
+                    type: string
+                    example: "global_fishing_watch"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /vessels/search:
     post:
@@ -982,6 +1451,22 @@ paths:
                     end:
                       type: string
                       format: date-time
+                vesselTypes:
+                  type: array
+                  description: Filter by vessel types
+                  items:
+                    type: string
+                    enum: [fishing, cargo, carrier, support, tanker, passenger]
+                gearTypes:
+                  type: array
+                  description: Filter by fishing gear types
+                  items:
+                    type: string
+                flags:
+                  type: array
+                  description: Filter by flag states (ISO 3-letter codes)
+                  items:
+                    type: string
       responses:
         '200':
           description: Search results
@@ -990,26 +1475,81 @@ paths:
               schema:
                 type: object
                 properties:
+                  searchCriteria:
+                    type: object
+                    properties:
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      radius:
+                        type: number
+                      timeWindow:
+                        type: object
+                        properties:
+                          start:
+                            type: string
+                            format: date-time
+                          end:
+                            type: string
+                            format: date-time
                   matches:
                     type: array
                     items:
                       $ref: '#/components/schemas/Vessel'
+                  totalMatches:
+                    type: integer
+                  dataFreshness:
+                    type: string
+                    format: date-time
+                    description: When vessel position data was last updated
+                  dataSource:
+                    type: string
+                    example: "global_fishing_watch"
+              examples:
+                searchResults:
+                  summary: Vessel search results
+                  value:
+                    searchCriteria:
+                      location:
+                        type: "Point"
+                        coordinates: [-1.7583, -39.8403]
+                      radius: 10.0
+                      timeWindow:
+                        start: "2024-01-15T12:00:00Z"
+                        end: "2024-01-15T18:00:00Z"
+                    matches:
+                      - id: "701000948"
+                        name: "FISHING VESSEL A"
+                        mmsi: "701000948"
+                        flag: "ARG"
+                        vesselType: "fishing"
+                        gearType: "squid_jigger"
+                        lastPosition:
+                          type: "Point"
+                          coordinates: [-1.7650, -39.8450]
+                        lastSeen: "2024-01-15T15:30:00Z"
+                        speed: 2.5
+                        dataSource: "global_fishing_watch"
+                    totalMatches: 3
+                    dataFreshness: "2024-01-16T08:00:00Z"
+                    dataSource: "global_fishing_watch"
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /vessels/pds/ingest:
+  /vessels/activity/region:
     post:
       tags:
         - Vessels
-      summary: Ingest PDS telemetry data
-      description: Receive vessel tracking data from Pelagic Data Systems devices
-      operationId: ingestPDSData
+      summary: Get vessel activity in region
+      description: |
+        Retrieve aggregated vessel activity for a custom region or predefined area (EEZ, MPA).
+        Data sourced from Global Fishing Watch 4Wings API.
+      operationId: getRegionalVesselActivity
       security:
-        - apiKeyAuth: []
+        - bearerAuth: []
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
       requestBody:
         required: true
         content:
@@ -1017,93 +1557,293 @@ paths:
             schema:
               type: object
               required:
-                - deviceId
-                - telemetry
+                - dateRange
               properties:
-                deviceId:
+                region:
+                  oneOf:
+                    - type: object
+                      description: Custom polygon region (GeoJSON)
+                      required:
+                        - type
+                        - coordinates
+                      properties:
+                        type:
+                          type: string
+                          enum: [Polygon]
+                        coordinates:
+                          type: array
+                          items:
+                            type: array
+                            items:
+                              type: array
+                              items:
+                                type: number
+                    - type: object
+                      description: Predefined region by ID
+                      required:
+                        - regionType
+                        - regionId
+                      properties:
+                        regionType:
+                          type: string
+                          enum: [eez, mpa, rfmo]
+                        regionId:
+                          type: string
+                          description: Region identifier from GFW
+                          example: "8466"
+                dateRange:
+                  type: object
+                  required:
+                    - start
+                    - end
+                  properties:
+                    start:
+                      type: string
+                      format: date
+                      example: "2024-01-01"
+                    end:
+                      type: string
+                      format: date
+                      example: "2024-01-31"
+                groupBy:
                   type: string
-                  description: PDS device identifier
-                telemetry:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - timestamp
-                      - location
-                    properties:
-                      timestamp:
+                  enum: [vessel, flag, gearType, vesselType, day, week, month]
+                  description: How to group the results
+                  example: "vessel"
+                filters:
+                  type: object
+                  description: Additional filters
+                  properties:
+                    vesselTypes:
+                      type: array
+                      items:
                         type: string
-                        format: date-time
-                      location:
-                        $ref: '#/components/schemas/GeoLocation'
-                      speed:
-                        type: number
-                      course:
-                        type: number
-                      catch:
-                        type: object
-                        properties:
-                          species:
-                            type: string
-                          weight:
-                            type: number
+                    gearTypes:
+                      type: array
+                      items:
+                        type: string
+                    flags:
+                      type: array
+                      items:
+                        type: string
+                      description: ISO 3-letter country codes
       responses:
-        '202':
-          description: Telemetry data accepted for processing
+        '200':
+          description: Regional activity data
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  ingested:
+                  region:
+                    type: object
+                    description: Region definition used for query
+                  dateRange:
+                    type: object
+                    properties:
+                      start:
+                        type: string
+                        format: date
+                      end:
+                        type: string
+                        format: date
+                  totalVessels:
                     type: integer
-                  batchId:
+                    description: Unique vessels detected in region
+                  totalFishingHours:
+                    type: number
+                    description: Total fishing effort hours
+                  totalVesselPresenceHours:
+                    type: number
+                    description: Total vessel presence hours (all vessel types)
+                  vessels:
+                    type: array
+                    description: Vessels detected in region (when groupBy=vessel)
+                    items:
+                      type: object
+                      properties:
+                        vesselId:
+                          type: string
+                        vesselName:
+                          type: string
+                        mmsi:
+                          type: string
+                        flag:
+                          type: string
+                        vesselType:
+                          type: string
+                        gearType:
+                          type: string
+                        hoursInRegion:
+                          type: number
+                        firstSeen:
+                          type: string
+                          format: date-time
+                        lastSeen:
+                          type: string
+                          format: date-time
+                        fishingHours:
+                          type: number
+                  aggregations:
+                    type: array
+                    description: Grouped results (when groupBy is not vessel)
+                    items:
+                      type: object
+                      properties:
+                        groupValue:
+                          type: string
+                          description: The grouping value (flag code, gear type, date, etc.)
+                        vessels:
+                          type: integer
+                        fishingHours:
+                          type: number
+                        presenceHours:
+                          type: number
+                  dataSource:
                     type: string
+                    example: "global_fishing_watch_4wings_api"
+                  dataFreshness:
+                    type: string
+                    format: date-time
+              examples:
+                kenyaEEZ:
+                  summary: Kenya EEZ fishing activity
+                  value:
+                    region:
+                      regionType: "eez"
+                      regionId: "8466"
+                      regionName: "Kenyan Exclusive Economic Zone"
+                    dateRange:
+                      start: "2024-01-01"
+                      end: "2024-01-31"
+                    totalVessels: 47
+                    totalFishingHours: 1523.5
+                    totalVesselPresenceHours: 2104.8
+                    vessels:
+                      - vesselId: "701000948"
+                        vesselName: "FISHING VESSEL A"
+                        mmsi: "701000948"
+                        flag: "KE"
+                        vesselType: "fishing"
+                        gearType: "trawlers"
+                        hoursInRegion: 45.5
+                        firstSeen: "2024-01-03T08:00:00Z"
+                        lastSeen: "2024-01-28T16:00:00Z"
+                        fishingHours: 38.2
+                    dataSource: "global_fishing_watch_4wings_api"
+                    dataFreshness: "2024-02-01T06:00:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /vessels/pds/status:
+  /vessels/heatmap:
     get:
       tags:
         - Vessels
-      summary: Get PDS device status
-      description: Check health of PDS devices on fishing vessels
-      operationId: getPDSStatus
+      summary: Get vessel activity heatmap data
+      description: |
+        Retrieve gridded vessel activity data for map visualization.
+        Returns fishing effort or vessel presence intensity by grid cells.
+      operationId: getVesselHeatmap
       security:
         - bearerAuth: []
       parameters:
-        - name: deviceId
+        - name: dataType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [fishing-effort, vessel-presence, sar-detections]
+          description: Type of activity data to retrieve
+        - name: bounds
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Map bounds in format "west,south,east,north"
+          example: "38.0,-5.0,42.0,-1.0"
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: resolution
           in: query
           schema:
             type: string
-          description: Filter by specific device
+            enum: [low, medium, high]
+            default: medium
+          description: Grid resolution for heatmap
+        - name: filters
+          in: query
+          schema:
+            type: string
+          description: JSON string with filters (vesselTypes, gearTypes, flags)
+        - $ref: '#/components/parameters/AcceptLanguageHeader'
       responses:
         '200':
-          description: PDS device status
+          description: Heatmap data retrieved
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  devices:
+                  dataType:
+                    type: string
+                  bounds:
+                    type: object
+                    properties:
+                      west:
+                        type: number
+                      south:
+                        type: number
+                      east:
+                        type: number
+                      north:
+                        type: number
+                  dateRange:
+                    type: object
+                    properties:
+                      start:
+                        type: string
+                        format: date
+                      end:
+                        type: string
+                        format: date
+                  cells:
                     type: array
+                    description: Grid cells with activity intensity
                     items:
                       type: object
                       properties:
-                        deviceId:
-                          type: string
-                        vesselName:
-                          type: string
-                        status:
-                          type: string
-                          enum: [active, inactive, error]
-                        lastSeen:
-                          type: string
-                          format: date-time
-                        batteryLevel:
+                        lat:
                           type: number
+                        lon:
+                          type: number
+                        value:
+                          type: number
+                          description: Activity intensity (fishing hours or vessel presence)
+                        vesselCount:
+                          type: integer
+                          description: Number of unique vessels in this cell
+                  maxValue:
+                    type: number
+                    description: Maximum value across all cells (for color scaling)
+                  dataSource:
+                    type: string
+                    example: "global_fishing_watch_4wings_api"
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1148,13 +1888,16 @@ paths:
                         enum: [operational, delayed, error]
                       vesselsTracked:
                         type: integer
-                  pds:
+                  globalFishingWatch:
                     type: object
                     properties:
                       lastSync:
                         type: string
                         format: date-time
-                      devicesActive:
+                      status:
+                        type: string
+                        enum: [operational, delayed, error]
+                      vesselsTracked:
                         type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -3101,7 +3844,7 @@ paths:
       tags:
         - System
       summary: External integrations status
-      description: Health of AIS/VMS/PDS integrations
+      description: Health of AIS/VMS and Global Fishing Watch integrations
       operationId: getIntegrationStatus
       security:
         - bearerAuth: []
@@ -3117,7 +3860,7 @@ paths:
                     $ref: '#/components/schemas/IntegrationStatus'
                   vms:
                     $ref: '#/components/schemas/IntegrationStatus'
-                  pds:
+                  globalFishingWatch:
                     $ref: '#/components/schemas/IntegrationStatus'
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -3171,7 +3914,7 @@ paths:
                 name:
                   type: string
                   description: Descriptive name
-                  example: "PDS Integration"
+                  example: "Global Fishing Watch Integration"
                 scopes:
                   type: array
                   items:
@@ -3274,7 +4017,7 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key for system integrations (AIS/VMS/PDS)
+      description: API key for system integrations (AIS/VMS and Global Fishing Watch)
 
   parameters:
     IdempotencyKeyHeader:
@@ -3422,6 +4165,79 @@ components:
         type: integer
       description: Unix timestamp when limit resets
       example: 1684156800
+
+    RateLimit-Limit:
+      schema:
+        type: string
+      description: |
+        Total requests allowed in the current window (IETF draft standard).
+        Format: <limit>
+      example: "100"
+
+    RateLimit-Remaining:
+      schema:
+        type: string
+      description: |
+        Requests remaining in the current window (IETF draft standard).
+      example: "89"
+
+    RateLimit-Reset:
+      schema:
+        type: string
+      description: |
+        Seconds until the rate limit window resets (IETF draft standard).
+      example: "3600"
+
+    RateLimit-Policy:
+      schema:
+        type: string
+      description: |
+        Rate limit policy description (IETF draft standard).
+        Format: <limit>;w=<window_in_seconds>
+      example: "100;w=3600"
+
+    X-Request-ID:
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Unique request identifier for distributed tracing and debugging.
+        Use this ID when contacting support or correlating logs across services.
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    X-Correlation-ID:
+      schema:
+        type: string
+      description: |
+        Correlation ID for grouping related requests across distributed services.
+        If not provided by client, server will generate one.
+      example: "abc-123-def-456"
+
+    Sunset:
+      schema:
+        type: string
+        format: date-time
+      description: |
+        RFC 8594 Sunset header indicating when this endpoint will be retired.
+        Plan migrations before this date.
+      example: "Sat, 31 Dec 2025 23:59:59 GMT"
+
+    Deprecation:
+      schema:
+        type: string
+        format: date-time
+      description: |
+        RFC 8594 Deprecation header indicating this endpoint is deprecated.
+        Include date when deprecation was announced.
+      example: "Tue, 01 Jan 2025 00:00:00 GMT"
+
+    Link:
+      schema:
+        type: string
+      description: |
+        RFC 8288 Link header for relationships between resources.
+        Can indicate successor API versions or related resources.
+      example: '</v2/reports>; rel="successor-version"; type="application/json"'
 
     X-Webhook-Signature:
       schema:
@@ -3593,33 +4409,93 @@ components:
           example: "FISHING VESSEL 123"
         mmsi:
           type: string
+          description: Maritime Mobile Service Identity
+          example: "440012345"
         imo:
           type: string
+          description: International Maritime Organization number
+          example: "7831410"
         callSign:
           type: string
+          description: Radio callsign
+          example: "5Z4567"
         flag:
           type: string
+          description: Flag state (ISO 3-letter country code)
           example: "KE"
         vesselType:
           type: string
+          description: Type of vessel (fishing, cargo, carrier, support, etc.)
           example: "Fishing"
+          enum: [fishing, cargo, carrier, support, tanker, passenger, other]
+        gearType:
+          type: string
+          description: Fishing gear type (if applicable)
+          example: "trawlers"
+          enum: 
+            - tuna_purse_seines
+            - driftnets
+            - trollers
+            - set_longlines
+            - purse_seines
+            - pots_and_traps
+            - other_fishing
+            - dredge_fishing
+            - set_gillnets
+            - fixed_gear
+            - trawlers
+            - fishing
+            - seiners
+            - other_purse_seines
+            - other_seines
+            - squid_jigger
+            - pole_and_line
+            - drifting_longlines
         length:
           type: number
           description: Length in meters
+          example: 53.6
+        tonnage:
+          type: number
+          description: Gross tonnage
+          example: 369
         lastPosition:
           $ref: '#/components/schemas/GeoLocation'
         lastSeen:
           type: string
           format: date-time
+          description: Last AIS transmission timestamp
+        firstSeen:
+          type: string
+          format: date-time
+          description: First AIS transmission timestamp
         speed:
           type: number
           description: Speed in knots
         course:
           type: number
           description: Course in degrees
+        heading:
+          type: number
+          description: Vessel heading in degrees
         licensed:
           type: boolean
           description: Whether vessel has valid fishing license
+        dataSource:
+          type: string
+          description: Source of vessel data
+          enum: [ais, vms, global_fishing_watch, manual]
+          example: "global_fishing_watch"
+        dataFreshness:
+          type: string
+          format: date-time
+          description: Timestamp when vessel data was last updated from external source
+        aisCoverage:
+          type: number
+          description: AIS coverage metric (0-100%) - percentage of time vessel broadcasts AIS while at sea
+          minimum: 0
+          maximum: 100
+          example: 85.3
 
     VesselDetail:
       allOf:
@@ -3628,14 +4504,251 @@ components:
           properties:
             owner:
               type: string
+              description: Vessel owner name
+              example: "DESEADO PESQUERA"
+            ownerFlag:
+              type: string
+              description: Owner nationality (ISO 3-letter country code)
+              example: "ARG"
             registrationDate:
               type: string
               format: date
             licenseExpiry:
               type: string
               format: date
+            authorizations:
+              type: array
+              description: Fishing authorizations from RFMOs and national registries
+              items:
+                type: object
+                properties:
+                  rfmo:
+                    type: string
+                    description: Regional Fisheries Management Organization
+                    example: "ICCAT"
+                  status:
+                    type: string
+                    enum: [authorized, not_authorized, pending]
+                    example: "authorized"
+                  validFrom:
+                    type: string
+                    format: date
+                  validTo:
+                    type: string
+                    format: date
+                  source:
+                    type: string
+                    description: Source of authorization data
+                    example: "public-registry"
+            registrySources:
+              type: array
+              description: Public registries where vessel is listed
+              items:
+                type: string
+                example: "IMO"
+              example: ["IMO", "ICCAT", "KE-national-registry"]
+            identityHistory:
+              type: array
+              description: Historical identity changes (name, MMSI, flag changes)
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  mmsi:
+                    type: string
+                  flag:
+                    type: string
+                  callSign:
+                    type: string
+                  validFrom:
+                    type: string
+                    format: date-time
+                  validTo:
+                    type: string
+                    format: date-time
+            riskIndicators:
+              type: object
+              description: Risk assessment indicators from GFW Insights API
+              properties:
+                iuuListed:
+                  type: boolean
+                  description: Whether vessel appears on RFMO IUU vessel lists
+                iuuListHistory:
+                  type: array
+                  description: Historical IUU list appearances
+                  items:
+                    type: object
+                    properties:
+                      rfmo:
+                        type: string
+                      listedDate:
+                        type: string
+                        format: date
+                      removedDate:
+                        type: string
+                        format: date
+                fishingInMPA:
+                  type: boolean
+                  description: Detected fishing in no-take Marine Protected Areas
+                fishingOutsideAuthorizedAreas:
+                  type: boolean
+                  description: Detected fishing outside known authorized areas
+                aisGapEvents:
+                  type: integer
+                  description: Number of AIS off events (intentional disabling) detected
+                unauthorizedEncounters:
+                  type: integer
+                  description: Number of encounters with vessels from different RFMOs
+            recentEvents:
+              type: object
+              description: Recent vessel activity events from GFW Events API
+              properties:
+                fishingEvents:
+                  type: array
+                  description: Recent apparent fishing activity
+                  items:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      durationHours:
+                        type: number
+                      distanceKm:
+                        type: number
+                      averageSpeed:
+                        type: number
+                      region:
+                        type: object
+                        properties:
+                          eez:
+                            type: array
+                            items:
+                              type: string
+                            description: Exclusive Economic Zone IDs
+                          mpa:
+                            type: array
+                            items:
+                              type: string
+                            description: Marine Protected Area IDs
+                          rfmo:
+                            type: array
+                            items:
+                              type: string
+                            description: RFMO area codes
+                      authorized:
+                        type: boolean
+                        description: Whether vessel had authorization for this area
+                encounters:
+                  type: array
+                  description: Recent encounter events (potential transshipment)
+                  items:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      durationHours:
+                        type: number
+                      otherVessel:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                          mmsi:
+                            type: string
+                          vesselType:
+                            type: string
+                      distanceFromShore:
+                        type: number
+                        description: Distance from shore in kilometers
+                      authorized:
+                        type: boolean
+                portVisits:
+                  type: array
+                  description: Recent port visit events
+                  items:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      portName:
+                        type: string
+                      portLocation:
+                        $ref: '#/components/schemas/GeoLocation'
+                      confidence:
+                        type: integer
+                        description: Confidence level (2=low, 3=medium, 4=high)
+                        minimum: 2
+                        maximum: 4
+                loiteringEvents:
+                  type: array
+                  description: Loitering events (stationary behavior indicating potential encounter)
+                  items:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      location:
+                        $ref: '#/components/schemas/GeoLocation'
+                      durationHours:
+                        type: number
+                      distanceFromShore:
+                        type: number
+                aisGaps:
+                  type: array
+                  description: AIS off events (intentional AIS disabling)
+                  items:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      startLocation:
+                        $ref: '#/components/schemas/GeoLocation'
+                      endLocation:
+                        $ref: '#/components/schemas/GeoLocation'
+                      durationHours:
+                        type: number
+                      distanceFromShore:
+                        type: number
             recentIncidents:
               type: array
+              description: BahariWatch community-reported incidents involving this vessel
               items:
                 type: object
                 properties:
@@ -3646,6 +4759,13 @@ components:
                     format: date-time
                   status:
                     type: string
+                  incidentType:
+                    type: string
+                  location:
+                    $ref: '#/components/schemas/GeoLocation'
+                  matchConfidence:
+                    type: string
+                    enum: [high, medium, low]
 
     VesselCollection:
       type: object
@@ -3685,10 +4805,190 @@ components:
           $ref: '#/components/schemas/GeoLocation'
         speed:
           type: number
+          description: Speed in knots
         course:
           type: number
+          description: Course over ground in degrees
         heading:
           type: number
+          description: Vessel heading in degrees
+        source:
+          type: string
+          enum: [ais, vms, gfw]
+          description: Data source for this position
+
+    VesselEvent:
+      type: object
+      description: Vessel activity event from Global Fishing Watch
+      required:
+        - eventId
+        - eventType
+        - startTime
+        - endTime
+        - location
+      properties:
+        eventId:
+          type: string
+          description: Unique event identifier from GFW
+          example: "49c5ab5a5ba4139b15ca9c039b0ea4f7"
+        eventType:
+          type: string
+          enum: [fishing, encounter, port-visit, loitering, gap]
+          description: Type of vessel activity event
+        startTime:
+          type: string
+          format: date-time
+          description: Event start timestamp
+        endTime:
+          type: string
+          format: date-time
+          description: Event end timestamp
+        location:
+          $ref: '#/components/schemas/GeoLocation'
+          description: Mean position of the event
+        boundingBox:
+          type: array
+          description: Bounding box of event [minLon, minLat, maxLon, maxLat]
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          example: [-62.7529, -47.16, -62.7686, -47.1277]
+        durationHours:
+          type: number
+          description: Duration of event in hours
+          example: 5.25
+        distanceKm:
+          type: number
+          description: Total distance covered during event in kilometers
+          example: 12.8
+        averageSpeed:
+          type: number
+          description: Average speed during event in knots
+          example: 2.3
+        regions:
+          type: object
+          description: Geographic regions where event occurred
+          properties:
+            eez:
+              type: array
+              description: Exclusive Economic Zone IDs
+              items:
+                type: string
+              example: ["8466"]
+            eezNames:
+              type: array
+              description: EEZ names for display
+              items:
+                type: string
+              example: ["Kenyan Exclusive Economic Zone"]
+            mpa:
+              type: array
+              description: Marine Protected Area IDs
+              items:
+                type: string
+            mpaNames:
+              type: array
+              description: MPA names for display
+              items:
+                type: string
+            rfmo:
+              type: array
+              description: Regional Fisheries Management Organization codes
+              items:
+                type: string
+              example: ["IOTC", "ICCAT"]
+            highSeas:
+              type: boolean
+              description: Whether event occurred on high seas
+        distanceFromShore:
+          type: number
+          description: Distance from nearest shore in kilometers
+          example: 45.8
+        distanceFromPort:
+          type: number
+          description: Distance from nearest port in kilometers
+          example: 112.3
+        authorized:
+          type: boolean
+          description: Whether vessel had authorization for this activity (for fishing events)
+        authorizationStatus:
+          type: string
+          enum: [publicly_authorized, not_matching_authorization, pending_info, partially_matched]
+          description: Detailed authorization status from GFW
+        potentialRisk:
+          type: boolean
+          description: Whether event is flagged as potential IUU activity
+        confidence:
+          type: integer
+          description: Event confidence level (for port visits - 2=low, 3=medium, 4=high)
+          minimum: 2
+          maximum: 4
+        encounterDetails:
+          type: object
+          description: Additional details for encounter events
+          properties:
+            otherVesselId:
+              type: string
+            otherVesselName:
+              type: string
+            otherVesselMmsi:
+              type: string
+            otherVesselType:
+              type: string
+            otherVesselFlag:
+              type: string
+            medianDistance:
+              type: number
+              description: Median distance between vessels in meters
+            minDistance:
+              type: number
+              description: Minimum distance between vessels in meters
+        portDetails:
+          type: object
+          description: Additional details for port visit events
+          properties:
+            portId:
+              type: string
+            portName:
+              type: string
+            portCountry:
+              type: string
+            anchorageId:
+              type: string
+            eventTypes:
+              type: array
+              description: Sub-events (entry, stop, gap, exit)
+              items:
+                type: string
+                enum: [entry, stop, gap, exit]
+        gapDetails:
+          type: object
+          description: Additional details for AIS gap events
+          properties:
+            startLocation:
+              $ref: '#/components/schemas/GeoLocation'
+            endLocation:
+              $ref: '#/components/schemas/GeoLocation'
+            gapHours:
+              type: number
+            intentionalDisabling:
+              type: boolean
+              description: Whether gap appears to be intentional AIS disabling (>50NM from shore)
+        vessel:
+          type: object
+          description: Vessel information at time of event
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            mmsi:
+              type: string
+            flag:
+              type: string
+            gearType:
+              type: string
 
     Match:
       type: object
